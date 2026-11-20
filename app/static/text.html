@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>得助 · 文本应答测试</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet" />
+</head>
+<body class="page-text">
+  <div class="bg-grid"></div>
+  <div class="bg-glow glow-a"></div>
+  <div class="bg-glow glow-b"></div>
+
+  <header class="hud-top">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-title">DEZHU TEXT LAB</div>
+        <div class="brand-sub">文本框提问 × 得助 reply API · 多轮 session</div>
+      </div>
+    </div>
+    <div class="hud-chips">
+      <a class="chip nav-chip" href="/">语音 Demo</a>
+      <span class="chip" id="chip-dz">DZ --</span>
+      <span class="chip" id="chip-session">SESSION --</span>
+      <span class="chip" id="chip-turns">TURN 0</span>
+    </div>
+  </header>
+
+  <main class="text-stage">
+    <section class="text-panel chat-panel">
+      <div class="panel-head">
+        <h2 class="panel-title">对话</h2>
+        <div class="panel-actions">
+          <button type="button" id="btn-welcome" class="btn ghost sm">开场欢迎</button>
+          <button type="button" id="btn-reset" class="btn ghost sm">新会话</button>
+        </div>
+      </div>
+      <div class="chat-log" id="chat-log">
+        <div class="chat-empty" id="chat-empty">输入问题后点发送，或先点「开场欢迎」拉取渠道欢迎语。</div>
+      </div>
+      <form class="chat-compose" id="chat-form">
+        <textarea
+          id="ask-input"
+          rows="2"
+          placeholder="输入问题，Enter 发送 · Shift+Enter 换行"
+          autocomplete="off"
+        ></textarea>
+        <button type="submit" id="btn-send" class="btn primary">
+          <span class="btn-glow"></span>
+          发送
+        </button>
+      </form>
+    </section>
+
+    <section class="text-panel side-panel">
+      <h2 class="panel-title">会话状态</h2>
+      <ul class="telemetry" id="telemetry">
+        <li>MODE: TEXT HTTP</li>
+        <li>API: POST /api/chat</li>
+        <li>BRAIN: 得助文本应答</li>
+      </ul>
+      <div class="tool-log">
+        <div class="tool-log-title">RAW RESPONSE</div>
+        <pre class="raw-body" id="raw-body">等待请求…</pre>
+      </div>
+    </section>
+  </main>
+
+  <footer class="hud-bottom">
+    <span>TEXT DEMO · DEZHU REPLY API · 同渠道凭证</span>
+    <span id="clock">00:00:00</span>
+  </footer>
+
+  <script src="/static/js/text.js"></script>
+</body>
+</html>

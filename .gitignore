@@ -1,0 +1,17 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.idea/
+.vscode/
+*.pcm
+*.wav
+.DS_Store
+# TLS 私钥与证书（自签/正式均勿提交）
+deploy/certs/*.pem
+deploy/certs/*.key
+deploy/certs/*.crt

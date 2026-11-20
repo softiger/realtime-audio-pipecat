@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>得助 · 全双工实时语音智能体</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <div class="bg-glow glow-a"></div>
+  <div class="bg-glow glow-b"></div>
+  <canvas id="particle-canvas"></canvas>
+
+  <header class="hud-top">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-title">DEZHU VOICE CORE</div>
+        <div class="brand-sub">QWEN REALTIME × 得助文本应答 · FULL DUPLEX</div>
+      </div>
+    </div>
+    <div class="hud-chips">
+      <a class="chip nav-chip" href="/text">文本 Demo</a>
+      <span class="chip" id="chip-model">MODEL --</span>
+      <span class="chip" id="chip-link">LINK OFFLINE</span>
+      <span class="chip" id="chip-session">SESSION --</span>
+      <span class="chip" id="chip-latency">LAT -- ms</span>
+    </div>
+  </header>
+
+  <main class="stage">
+    <section class="panel left-panel">
+      <h2 class="panel-title">运行状态</h2>
+      <div class="meter">
+        <label>MIC ENERGY</label>
+        <div class="bar"><i id="mic-bar"></i></div>
+      </div>
+      <div class="meter">
+        <label>TTS STREAM</label>
+        <div class="bar"><i id="tts-bar"></i></div>
+      </div>
+      <ul class="telemetry" id="telemetry">
+        <li>CORE: STANDBY</li>
+        <li>PROTOCOL: WSS</li>
+        <li>BRAIN: 得助文本应答</li>
+        <li>VAD: smart_turn_v2</li>
+      </ul>
+      <div class="tool-log" id="tool-log">
+        <div class="tool-log-title">DEZHU TRACE</div>
+        <div class="tool-log-body" id="tool-log-body">等待业务调用…</div>
+      </div>
+    </section>
+
+    <section class="core">
+      <div class="orb-wrap">
+        <canvas id="wave-canvas" width="420" height="420"></canvas>
+        <div class="orb" id="orb">
+          <div class="orb-ring r1"></div>
+          <div class="orb-ring r2"></div>
+          <div class="orb-ring r3"></div>
+          <div class="orb-core" id="orb-core"></div>
+        </div>
+      </div>
+      <div class="status-line" id="status-line">系统就绪 · 点击下方开启一次通话 Session</div>
+      <div class="controls">
+        <button id="btn-connect" class="btn primary">
+          <span class="btn-glow"></span>
+          开启通话
+        </button>
+        <button id="btn-mute" class="btn ghost" disabled>麦克风 开</button>
+      </div>
+      <p class="hint">每次「开启通话」= 独立 Session · 通话内多轮复用得助 sessionId · 可自然打断</p>
+    </section>
+
+    <section class="panel right-panel">
+      <h2 class="panel-title">实时字幕</h2>
+      <div class="transcript" id="transcript"></div>
+    </section>
+  </main>
+
+  <footer class="hud-bottom">
+    <span>SECURE CHANNEL · PCM 16k↑ / 24k↓ · DEZHU REPLY API</span>
+    <span id="clock">00:00:00</span>
+  </footer>
+
+  <script src="/static/js/audio.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
