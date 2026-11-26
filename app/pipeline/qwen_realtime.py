@@ -47,7 +47,7 @@ from pipecat.utils.text.base_text_aggregator import TextType
 from app.config import Settings
 from app.pipeline.latency import TurnStopwatch
 from app.pipeline.response_scheduler import ResponseScheduler
-from app.pipeline.session_config import build_session_update
+from app.pipeline.session_config import build_session_update, build_speak_instructions
 from app.pipeline.state_machine import CallPhase, SessionOrchestrator
 from app.pipeline.tool_args import with_calibrated_question
 from app.tools.executor import ToolExecutor, ToolPolicy
@@ -511,14 +511,21 @@ class QwenRealtimeService(FrameProcessor):
             generation=gen,
             modalities=["text", "audio"],
             tool_choice=tool_choice,
-            instructions=(
-                "请用自然亲切的中文口语完整朗读下面内容，"
-                "不要增删改写，不要反问，不要调用任何工具：\n" + safe
+            instructions=build_speak_instructions(
+                safe,
+                self.settings.speak_mode,
+                prefix_polish=getattr(self.settings, "speak_prefix_polish", None),
+                prefix_verbatim=getattr(
+                    self.settings, "speak_prefix_verbatim", None
+                ),
             ),
         )
 
     async def _speak_tool_filler(self) -> None:
-        text = (self.settings.tool_filler_text or "").strip() or "稍等，我帮您查一下。"
+        text = (self.settings.tool_filler_text or "").strip() or "稍等。"
+        prompt = (
+            getattr(self.settings, "tool_filler_prompt", None) or ""
+        ).strip() or "（系统）请播报等待提示。"
         await self._emit(
             {
                 "type": "bridge.phase",
@@ -530,32 +537,65 @@ class QwenRealtimeService(FrameProcessor):
             text,
             tool_choice="none",
             as_filler=True,
-            prompt_user="（系统）请播报等待提示。",
+            prompt_user=prompt,
+        )
+
+    def _filler_still_needed(self, generation: int) -> bool:
+        return not (
+            self.orch.is_stale(generation)
+            or self.orch.tools_inflight <= 0
+            or self._closed
+        )
+
+    async def _wait_scheduler_idle_for_filler(
+        self, generation: int, *, timeout_s: float = 2.5
+    ) -> bool:
+        """等调度器空闲以便播垫词；过期/工具结束返回 False。"""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if not self._filler_still_needed(generation):
+                return False
+            if not self._scheduler.is_busy():
+                return True
+            await asyncio.sleep(0.05)
+        return (
+            self._filler_still_needed(generation)
+            and not self._scheduler.is_busy()
         )
 
     async def _tool_filler_loop(self, generation: int) -> None:
         if not getattr(self.settings, "tool_filler_enabled", True):
             return
-        delay = max(0, int(getattr(self.settings, "tool_filler_delay_ms", 450) or 0)) / 1000.0
+        delay_s = (
+            max(0, int(getattr(self.settings, "tool_filler_delay_ms", 450) or 0))
+            / 1000.0
+        )
+        interval_s = (
+            max(
+                0,
+                int(getattr(self.settings, "tool_filler_interval_ms", 3000) or 0),
+            )
+            / 1000.0
+        )
+        max_count = int(getattr(self.settings, "tool_filler_max_count", 1) or 0)
+        if max_count <= 0:
+            max_count = 1
         try:
-            await asyncio.sleep(delay)
-            if self.orch.is_stale(generation) or self.orch.tools_inflight <= 0 or self._closed:
-                return
-            deadline = time.monotonic() + 2.5
-            while time.monotonic() < deadline:
-                if self.orch.is_stale(generation) or self.orch.tools_inflight <= 0 or self._closed:
+            spoken = 0
+            # 首触用 DELAY；后续用 INTERVAL（<=0 则不再重复）
+            wait_s = delay_s
+            while spoken < max_count:
+                if wait_s > 0:
+                    await asyncio.sleep(wait_s)
+                if not self._filler_still_needed(generation):
                     return
-                if not self._scheduler.is_busy():
-                    break
-                await asyncio.sleep(0.05)
-            if (
-                self.orch.is_stale(generation)
-                or self.orch.tools_inflight <= 0
-                or self._scheduler.is_busy()
-                or self._closed
-            ):
-                return
-            await self._speak_tool_filler()
+                if not await self._wait_scheduler_idle_for_filler(generation):
+                    return
+                await self._speak_tool_filler()
+                spoken += 1
+                if spoken >= max_count or interval_s <= 0:
+                    return
+                wait_s = interval_s
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
