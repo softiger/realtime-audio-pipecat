@@ -16,6 +16,13 @@ from app.config import get_settings
 from app.dezhu.client import DezhuChatClient, extract_speakable_text
 from app.dezhu.session import CallSession
 from app.pipeline import run_voice_bot
+from app.runtime_config import (
+    ConfigPutBody,
+    apply_overrides,
+    build_config_snapshot,
+    clear_overrides,
+    get_effective_settings,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,9 +90,51 @@ async def text_demo() -> FileResponse:
     return FileResponse(STATIC_DIR / "text.html")
 
 
+@app.get("/config")
+async def config_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "config.html")
+
+
+def _sync_dezhu_settings() -> None:
+    """把生效配置挂回共享 Dezhu 客户端（密钥/渠道热更）。"""
+    dezhu: DezhuChatClient | None = getattr(app.state, "dezhu", None)
+    if dezhu is not None:
+        dezhu.settings = get_effective_settings()
+
+
+@app.get("/api/config")
+async def get_config() -> dict[str, Any]:
+    return build_config_snapshot()
+
+
+@app.put("/api/config")
+async def put_config(body: ConfigPutBody) -> dict[str, Any]:
+    """运行时覆盖：不写 .env；下一通语音 / 下一次文本生效。"""
+    try:
+        apply_overrides(body.values or {}, replace=bool(body.replace))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _sync_dezhu_settings()
+    snap = build_config_snapshot()
+    logger.info(
+        "runtime config updated | overrides=%s",
+        snap.get("override_keys"),
+    )
+    return snap
+
+
+@app.post("/api/config/reset")
+async def reset_config() -> dict[str, Any]:
+    """清空全部运行时覆盖，回到 .env 底座。"""
+    clear_overrides()
+    _sync_dezhu_settings()
+    logger.info("runtime config reset to .env")
+    return build_config_snapshot()
+
+
 @app.get("/api/health")
 async def health() -> dict:
-    settings = get_settings()
+    settings = get_effective_settings()
     return {
         "ok": True,
         "engine": "pipecat",
@@ -107,7 +156,8 @@ async def health() -> dict:
 @app.post("/api/chat")
 async def text_chat(body: TextChatRequest) -> dict[str, Any]:
     """文本框问答 → 得助 reply → 纯文本答案（可多轮）。"""
-    settings = get_settings()
+    settings = get_effective_settings()
+    _sync_dezhu_settings()
     if not settings.has_dezhu:
         raise HTTPException(status_code=503, detail="得助凭证未配置")
 
@@ -143,7 +193,8 @@ async def text_chat(body: TextChatRequest) -> dict[str, Any]:
 async def voice_ws(websocket: WebSocket) -> None:
     """浏览器全双工语音：Pipecat Pipeline + Qwen Realtime + 得助 FC。"""
     await websocket.accept()
-    settings = get_settings()
+    settings = get_effective_settings()
+    _sync_dezhu_settings()
     dezhu: DezhuChatClient = websocket.app.state.dezhu
     # 每次通话新建 session（得助 sessionId 在通话内多轮复用）
     call = CallSession()

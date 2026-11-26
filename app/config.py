@@ -20,15 +20,35 @@ class Settings(BaseSettings):
     realtime_model: str = "qwen-audio-3.1-realtime-plus"
     realtime_voice: str = "longanqian_v3.1"
     turn_detection: str = "smart_turn_v2"
+    # 仅 TURN_DETECTION=server_vad 时写入 turn_detection
+    server_vad_threshold: float = 0.5
+    server_vad_silence_duration_ms: int = 500
+    # 声纹预录公网 URL，逗号/分号/换行分隔；仅 smart_turn(_v2) 生效，最多 5 条
+    voiceprint_audio_urls: str = ""
 
     # 全双工策略：full=随时可打断 | gate=播报中忽略 VAD 打断 | half=播报中上行静音
     # soft=服务端可打断，前端播报中低能量不上送（外放更稳）
     voice_duplex: str = "soft"
 
-    # 得助查询等待：超时未返回则先播一句垫词（上游 TTS）
+    # 播报文案策略：polish=忠实内容可轻度口语化 | verbatim=完整照读不增删改写
+    # 同时约束：会话 instructions（工具结果复述）+ speak_text（开场/垫词）
+    speak_mode: str = "polish"
+
+    # 得助查询等待：超时未返回则先播垫词（上游 TTS）
     tool_filler_enabled: bool = True
+    # 首触：工具开始后多久仍在跑才播第一句
     tool_filler_delay_ms: int = 450
-    tool_filler_text: str = "稍等，我帮您查一下。"
+    # 多次：两句垫词之间的间隔；<=0 则只播首触一句
+    tool_filler_interval_ms: int = 3000
+    # 单次工具调用最多垫词句数（含首触）；<=0 按 1
+    tool_filler_max_count: int = 1
+    tool_filler_text: str = "稍等。"
+    # speak_text 的 conversation user 提示（垫词专用）
+    tool_filler_prompt: str = "（系统）请播报等待提示。"
+
+    # 开场/垫词朗读 instructions 前缀；空则用 session_config 内置模板
+    speak_prefix_polish: str = ""
+    speak_prefix_verbatim: str = ""
 
     # 工具入参：等本轮 ASR 完成再校准 question（毫秒）
     tool_transcript_wait_ms: int = 550
@@ -66,6 +86,27 @@ class Settings(BaseSettings):
             and (self.dz_private_key or "").strip()
             and (self.dz_api_base_url or "").strip()
         )
+
+    def parsed_voiceprint_audio_urls(self) -> list[str]:
+        """解析声纹 URL；空项丢弃，去重保序，上限 5（百炼协议）。"""
+        raw = (self.voiceprint_audio_urls or "").strip()
+        if not raw:
+            return []
+        parts: list[str] = []
+        for chunk in raw.replace(";", ",").replace("\n", ",").split(","):
+            u = chunk.strip()
+            if u:
+                parts.append(u)
+        seen: set[str] = set()
+        out: list[str] = []
+        for u in parts:
+            if u in seen:
+                continue
+            seen.add(u)
+            out.append(u)
+            if len(out) >= 5:
+                break
+        return out
 
     def realtime_ws_url(self) -> str:
         model = self.realtime_model
