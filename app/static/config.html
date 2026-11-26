@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>得助 · 运行时参数</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet" />
+</head>
+<body class="page-config">
+  <div class="bg-grid"></div>
+  <div class="bg-glow glow-a"></div>
+  <div class="bg-glow glow-b"></div>
+
+  <header class="hud-top">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-title">RUNTIME CONFIG</div>
+        <div class="brand-sub">内存热更 · 不写 .env · 下一通 Session 生效</div>
+      </div>
+    </div>
+    <div class="hud-chips">
+      <a class="chip nav-chip" href="/">语音 Demo</a>
+      <a class="chip nav-chip" href="/text">文本 Demo</a>
+      <span class="chip" id="chip-overrides">OVERRIDE 0</span>
+      <span class="chip" id="chip-flags">KEY -- · DZ --</span>
+    </div>
+  </header>
+
+  <main class="config-stage">
+    <div class="config-toolbar">
+      <p class="config-note" id="config-note">加载中…</p>
+      <div class="config-actions">
+        <button type="button" id="btn-reload" class="btn ghost sm">刷新</button>
+        <button type="button" id="btn-reset" class="btn ghost sm">恢复 .env</button>
+        <button type="button" id="btn-save" class="btn primary sm">
+          <span class="btn-glow"></span>
+          保存热更
+        </button>
+      </div>
+    </div>
+    <div class="config-status" id="config-status" hidden></div>
+    <div class="config-sections" id="config-sections"></div>
+  </main>
+
+  <footer class="hud-bottom">
+    <span>RUNTIME ONLY · NO PERSIST</span>
+    <span id="clock">--:--:--</span>
+  </footer>
+
+  <script src="/static/js/config.js"></script>
+</body>
+</html>
