@@ -3,11 +3,11 @@
  *   Mic → 降采样 16k PCM16 → WebSocket binary（优先）/ JSON base64（兼容）
  *   WebSocket JSON response.audio.delta(24k base64) → 抖动缓冲 → 无缝调度播放
  *
- * 颤音/断续常见原因与对策：
- *   1) 过小 delta 块 + 网络抖动 → underrun 空隙 → 合并到 ~60ms 再 schedule
- *   2) nextPlayTime 落后 currentTime → 硬跳 now+lookahead 产生周期性缺口 → 预缓冲
- *   3) AudioContext@48k 播 24k buffer 隐式重采样毛刺 → 线性升采样到 ctx.sampleRate
- *   4) 块边界硬切 → 极短 crossfade 抹平
+ * 颤音/断续/哒哒常见原因与对策：
+ *   1) 过小 delta + 网络抖动 → underrun → MERGE / PREBUFFER / HORIZON 加大
+ *   2) 块与块首尾相接时做「尾混头」crossfade 会跳变哒哒 → 连续 PCM 只做相位连续升采样
+ *   3) 24k→48k 分块独立插值会在边界断相 → 保留 stream 历史点 + 分数相位
+ *   4) underrun 恢复 → 短 fade-in，避免硬起声
  *
  * duplex soft：播报中低能量不上送，高能量持续约 180ms 才允许 barge-in
  */
@@ -34,18 +34,26 @@ function createAudioPipeline({ onPcmChunk, onMicLevel, onPlayLevel, getDuplex })
 
   const INPUT_RATE = 16000;
   const STREAM_RATE = 24000; // Qwen / 服务端 PCM 采样率
-  const BARGE_ENERGY = 0.12;
-  const BARGE_HOLD_SEC = 0.18;
+  const BARGE_ENERGY = 0.1;
+  const BARGE_HOLD_SEC = 0.15;
 
-  // 播放稳定参数
-  const MERGE_MS = 60; // 合并到约 60ms 再播，减少 schedule 次数与边界毛刺
-  const PREBUFFER_MS = 100; // 首包前抖动缓冲
-  const LOOKAHEAD_SEC = 0.03; // 相对 currentTime 的安全提前量
-  const CROSSFADE_MS = 2; // 块间接力淡入淡出
-  const PUMP_INTERVAL_MS = 20;
+  // 播放稳定参数（抖动→加缓冲；哒哒→接缝算法，不是盲目加 crossfade）
+  const MERGE_MS = 220; // 合并后再播，减少 schedule 次数
+  const PREBUFFER_MS = 320; // 首包前抖动缓冲
+  const LOOKAHEAD_SEC = 0.05; // 相对 currentTime 的安全提前量
+  const HORIZON_SEC = 0.55; // 时间轴预排水位
+  const PUMP_INTERVAL_MS = 12;
+  const UNDERRUN_FADE_MS = 12; // underrun 恢复时淡入，避免硬哒
+  const PLAY_SOFT_CLIP = 0.92;
+  /** Hermite 连续升采样：保留的 24k 历史点数 */
+  const RESAMPLE_PAD = 3;
 
-  /** 上一块末尾样本，用于 crossfade */
-  let tailSamples = null;
+  /** 24k 历史样本（升采样相位连续） */
+  let streamPad = null;
+  /** 下一输出点在「当前块起点」上的分数位置（输入样本单位） */
+  let streamFrac = 0;
+  /** 下一块是否需要 underrun 淡入 */
+  let needFadeIn = false;
 
   function duplexMode() {
     try {
@@ -198,82 +206,125 @@ function createAudioPipeline({ onPcmChunk, onMicLevel, onPlayLevel, getDuplex })
     return out;
   }
 
+  function softClip(s) {
+    if (s > PLAY_SOFT_CLIP) s = PLAY_SOFT_CLIP + (s - PLAY_SOFT_CLIP) * 0.15;
+    else if (s < -PLAY_SOFT_CLIP) s = -PLAY_SOFT_CLIP + (s + PLAY_SOFT_CLIP) * 0.15;
+    return s < -1 ? -1 : s > 1 ? 1 : s;
+  }
+
+  function resetResampler() {
+    streamPad = null;
+    streamFrac = 0;
+  }
+
   /**
-   * 24k mono f32 → ctx.sampleRate，线性插值（比浏览器隐式转换更稳）。
+   * 24k → ctxRate，相位连续 Catmull-Rom。
+   * 连续 PCM 首尾相接不要 crossfade；插值历史不断则边界无哒哒。
    */
-  function upsampleLinear(f32, fromRate, toRate) {
-    if (fromRate === toRate) return f32;
-    const ratio = toRate / fromRate;
-    const outLen = Math.max(1, Math.round(f32.length * ratio));
-    const out = new Float32Array(outLen);
-    const last = f32.length - 1;
-    for (let i = 0; i < outLen; i++) {
-      const src = i / ratio;
-      const i0 = Math.floor(src);
-      const i1 = i0 < last ? i0 + 1 : last;
-      const t = src - i0;
-      out[i] = f32[i0] * (1 - t) + f32[i1] * t;
+  function upsampleHermiteContinuous(f32, fromRate, toRate) {
+    if (!f32.length) return new Float32Array(0);
+    if (fromRate === toRate) {
+      const keep = Math.min(RESAMPLE_PAD, f32.length);
+      streamPad = new Float32Array(f32.subarray(f32.length - keep));
+      streamFrac = 0;
+      const out = new Float32Array(f32.length);
+      for (let i = 0; i < f32.length; i++) out[i] = softClip(f32[i]);
+      return out;
     }
+
+    const padLen = streamPad && streamPad.length ? streamPad.length : 0;
+    const input = new Float32Array(padLen + f32.length);
+    if (padLen) input.set(streamPad, 0);
+    input.set(f32, padLen);
+    const last = input.length - 1;
+    const at = (i) => input[i < 0 ? 0 : i > last ? last : i];
+
+    const step = fromRate / toRate;
+    let pos = streamFrac;
+    const endPos = f32.length;
+    const est = Math.max(1, Math.ceil((endPos - pos) / step) + 2);
+    const tmp = new Float32Array(est);
+    let n = 0;
+    while (pos < endPos) {
+      const ip = pos + padLen;
+      const i1 = Math.floor(ip);
+      const t = ip - i1;
+      const p0 = at(i1 - 1);
+      const p1 = at(i1);
+      const p2 = at(i1 + 1);
+      const p3 = at(i1 + 2);
+      const a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+      const b = p0 - 2.5 * p1 + 2 * p2 - 0.5 * p3;
+      const c = -0.5 * p0 + 0.5 * p2;
+      const d = p1;
+      tmp[n++] = softClip(((a * t + b) * t + c) * t + d);
+      pos += step;
+    }
+    streamFrac = pos - endPos;
+    const keep = Math.min(RESAMPLE_PAD, f32.length);
+    streamPad = new Float32Array(f32.subarray(f32.length - keep));
+
+    if (n === tmp.length) return tmp;
+    const out = new Float32Array(n);
+    out.set(tmp.subarray(0, n));
     return out;
   }
 
-  /** 与上一块尾部做极短 crossfade，消除块边界咔哒/颤感 */
-  function applyCrossfade(chunk) {
-    const n = Math.min(
-      chunk.length,
-      Math.round((CROSSFADE_MS / 1000) * ctxRate()),
-      tailSamples ? tailSamples.length : 0
-    );
-    if (!n || !tailSamples) {
-      // 保存尾部供下一块
-      const keep = Math.min(chunk.length, Math.max(n, 32));
-      tailSamples = chunk.subarray(chunk.length - keep);
-      return chunk;
-    }
-    const out = chunk.length === n ? new Float32Array(chunk) : chunk;
-    // 若 chunk 是原数组视图且会被改写，复制一份
-    const mutable = out === chunk ? new Float32Array(chunk) : out;
+  function applyFadeIn(chunk, ms) {
+    const n = Math.min(chunk.length, Math.round((ms / 1000) * ctxRate()));
+    if (n <= 1) return chunk;
+    const out = chunk instanceof Float32Array ? new Float32Array(chunk) : chunk;
     for (let i = 0; i < n; i++) {
-      const a = i / n;
-      const prev = tailSamples[tailSamples.length - n + i];
-      mutable[i] = prev * (1 - a) + mutable[i] * a;
+      out[i] *= Math.sin(((i / n) * Math.PI) / 2);
     }
-    const keep = Math.min(mutable.length, Math.max(n, 32));
-    tailSamples = mutable.subarray(mutable.length - keep);
-    return mutable;
+    return out;
   }
 
   function scheduleChunk(f32StreamRate) {
     if (!audioCtx || !f32StreamRate.length) return;
 
-    const f32 = applyCrossfade(upsampleLinear(f32StreamRate, STREAM_RATE, ctxRate()));
+    const now = audioCtx.currentTime;
+    let startAt;
+    let fadeThis = false;
+    if (nextPlayTime <= 0) {
+      startAt = now + LOOKAHEAD_SEC;
+    } else if (nextPlayTime < now + 0.01) {
+      startAt = now + LOOKAHEAD_SEC;
+      resetResampler();
+      fadeThis = true;
+    } else {
+      startAt = nextPlayTime;
+    }
+    if (needFadeIn) {
+      fadeThis = true;
+      needFadeIn = false;
+    }
+
+    let f32 = upsampleHermiteContinuous(f32StreamRate, STREAM_RATE, ctxRate());
+    if (!f32.length) return;
+    if (fadeThis) f32 = applyFadeIn(f32, UNDERRUN_FADE_MS);
+
     const buf = audioCtx.createBuffer(1, f32.length, ctxRate());
-    // copyToChannel 在部分浏览器对共享 buffer 更安全
     buf.copyToChannel(f32, 0);
 
     const src = audioCtx.createBufferSource();
     src.buffer = buf;
-    src.connect(audioCtx.destination);
-
-    const now = audioCtx.currentTime;
-    // 时间轴连续：落后则贴 now+lookahead（underrun 恢复），不引入额外随机抖动
-    let startAt;
-    if (nextPlayTime <= 0) {
-      startAt = now + LOOKAHEAD_SEC;
-    } else if (nextPlayTime < now + 0.005) {
-      // 已 underrun：紧贴当前，避免叠加重影
-      startAt = now + 0.008;
-    } else {
-      startAt = nextPlayTime;
-    }
+    const gain = audioCtx.createGain();
+    gain.gain.value = 0.95;
+    src.connect(gain);
+    gain.connect(audioCtx.destination);
 
     src.onended = () => {
       const i = activeSources.indexOf(src);
       if (i >= 0) activeSources.splice(i, 1);
+      try {
+        gain.disconnect();
+      } catch {}
     };
     activeSources.push(src);
     try {
       src.start(startAt);
+      // 与 buffer 实际时长对齐，避免 1～2 样本缝隙哒哒
       nextPlayTime = startAt + buf.duration;
     } catch {
       const i = activeSources.indexOf(src);
@@ -284,15 +335,11 @@ function createAudioPipeline({ onPcmChunk, onMicLevel, onPlayLevel, getDuplex })
   function pumpOnce() {
     if (!audioCtx) return;
 
-    // 首启：等抖动缓冲够了再出声，避免开头一卡一卡
     if (nextPlayTime <= 0 && activeSources.length === 0) {
-      if (queuedDurationSec() * 1000 < PREBUFFER_MS) {
-        return;
-      }
+      if (queuedDurationSec() * 1000 < PREBUFFER_MS) return;
     }
 
-    // 保持约 2～3 块在时间轴上，吃掉网络抖动
-    const horizon = audioCtx.currentTime + 0.18;
+    const horizon = audioCtx.currentTime + HORIZON_SEC;
     while (playQueue.length && (nextPlayTime <= 0 || nextPlayTime < horizon)) {
       const chunk = takeMergedChunk();
       if (!chunk) break;
@@ -317,7 +364,8 @@ function createAudioPipeline({ onPcmChunk, onMicLevel, onPlayLevel, getDuplex })
         playing = false;
         pumpTimer = null;
         nextPlayTime = 0;
-        tailSamples = null;
+        resetResampler();
+        needFadeIn = false;
         setTimeout(() => onPlayLevel?.(0.05), 120);
       }
     };
@@ -326,7 +374,8 @@ function createAudioPipeline({ onPcmChunk, onMicLevel, onPlayLevel, getDuplex })
 
   function interruptPlayback() {
     playQueue = [];
-    tailSamples = null;
+    resetResampler();
+    needFadeIn = false;
     if (pumpTimer) {
       clearTimeout(pumpTimer);
       pumpTimer = null;
